@@ -140,9 +140,6 @@ class _InitialData extends InitialData {
     final items = _videoItems;
     if (items == null) return null;
 
-    final endpoint = items
-        .firstWhereOrNull((e) => e['continuationItemRenderer'] != null)
-        ?.getJson<JsonMap>('continuationItemRenderer/continuationEndpoint');
     final item = items.firstWhereOrNull((e) =>
         e['continuationItemRenderer'] != null ||
         e['continuationItemViewModel'] != null);
@@ -159,20 +156,51 @@ class _InitialData extends InitialData {
     if (endpoint == null) return null;
 
     // Direct token.
+    final token = endpoint.getJson<String>('continuationCommand/token');
+    if (token != null) return token;
+
+    // Some responses nest the token inside a commandExecutorCommand.
+    return endpoint
+        .getJson<List<dynamic>>('commandExecutorCommand/commands')
+        ?.cast<JsonMap>()
+        .map((c) => c.getJson<String>('continuationCommand/token'))
+        .nonNulls
+        .firstOrNull;
+  }
+
+  /// The flat list of items (videos + continuation marker) for the current page.
+  /// Handles both continuation responses and initial page loads.
+  List<JsonMap>? get _videoItems {
+    // Continuation responses arrive under onResponseReceivedActions/Commands.
+    final actions = root.getJson<List<dynamic>>('onResponseReceivedActions') ??
+        root.getJson<List<dynamic>>('onResponseReceivedCommands');
+    if (actions != null) {
+      for (final action in actions.cast<JsonMap>()) {
+        final items = action.getJson<List<dynamic>>(
+                'appendContinuationItemsAction/continuationItems') ??
+            action.getJson<List<dynamic>>(
+                'reloadContinuationItemsCommand/continuationItems');
+        if (items != null) return items.cast<JsonMap>();
       }
     }
 
-    // Initial page: tabs → sectionList → itemSection → playlistVideoListRenderer.
     // Initial page: tabs -> sectionList -> itemSection.
     // Newer YouTube pages put videos directly in itemSection as lockupViewModel;
     // older pages nest them under playlistVideoListRenderer.
     final tabs = root
         .getJson<List<dynamic>>('contents/twoColumnBrowseResultsRenderer/tabs');
     if (tabs == null) return null;
+
+    for (final tab in tabs.cast<JsonMap>()) {
+      final sections = tab.getJson<List<dynamic>>(
+          'tabRenderer/content/sectionListRenderer/contents');
+      if (sections == null) continue;
+
+      for (final section in sections.cast<JsonMap>()) {
+        final itemContents =
             section.getJson<List<dynamic>>('itemSectionRenderer/contents');
         if (itemContents == null) continue;
 
-        for (final item in itemContents.cast<JsonMap>()) {
         final items = itemContents.cast<JsonMap>();
         if (items.any(_isVideoListItem)) return items;
 
@@ -180,17 +208,16 @@ class _InitialData extends InitialData {
           final contents =
               item.getJson<List<dynamic>>('playlistVideoListRenderer/contents');
           if (contents != null) return contents.cast<JsonMap>();
+        }
+      }
+    }
+    return null;
+  }
+
+  List<_Video> get playlistVideos {
     final items = _videoItems;
     if (items == null) return const [];
 
-    return items
-        .map((item) =>
-            item['playlistVideoRenderer'] as JsonMap? ??
-            item['richItemRenderer']?['content']?['playlistVideoRenderer']
-                as JsonMap?)
-        .nonNulls
-        .map(_Video.new)
-        .toList();
     return items.map(_Video.fromItem).nonNulls.toList();
   }
 
@@ -207,7 +234,6 @@ class _Video {
   final JsonMap root;
   _Video(this.root);
 
-  String get id => root.getT<String>('videoId')!;
   static _Video? fromItem(JsonMap item) {
     final renderer = item['playlistVideoRenderer'] as JsonMap? ??
         item.getJson<JsonMap>('richItemRenderer/content/playlistVideoRenderer');
@@ -236,6 +262,11 @@ class _Video {
       root
           .getJson<List<dynamic>>('ownerText/runs')
           ?.cast<Map<dynamic, dynamic>>()
+          .parseRuns() ??
+      root
+          .getJson<List<dynamic>>('shortBylineText/runs')
+          ?.cast<Map<dynamic, dynamic>>()
+          .parseRuns() ??
       '';
 
   String get channelId =>
@@ -249,6 +280,9 @@ class _Video {
       root.getJson<String>(
           'ownerText/runs/0/navigationEndpoint/browseEndpoint/browseId') ??
       root.getJson<String>(
+          'shortBylineText/runs/0/navigationEndpoint/browseEndpoint/browseId') ??
+      root.getJson<String>(
+          'shortBylineText/runs/0/navigationEndpoint/showDialogCommand/panelLoadingStrategy/inlineContent/dialogViewModel/customContent/listViewModel/listItems/0/listItemViewModel/rendererContext/commandContext/onTap/innertubeCommand/browseEndpoint/browseId') ??
       '';
 
   String get title =>
@@ -256,6 +290,14 @@ class _Video {
       root
           .getJson<List<dynamic>>('title/runs')
           ?.cast<Map<dynamic, dynamic>>()
+          .parseRuns() ??
+      '';
+
+  String get description =>
+      root
+          .getJson<List<dynamic>>('descriptionSnippet')
+          ?.cast<Map<dynamic, dynamic>>()
+          .parseRuns() ??
       '';
 
   Duration? get duration =>
@@ -271,7 +313,6 @@ class _Video {
       _videoInfo?.split('•').elementAtSafe(0)?.stripNonDigits().parseInt() ??
       0;
 
-  String? get uploadDateRaw => _videoInfo?.split('•').elementAtSafe(1);
   String? get uploadDateRaw =>
       _metadataPartText(1, 1) ?? _videoInfo?.split('•').elementAtSafe(1);
 
