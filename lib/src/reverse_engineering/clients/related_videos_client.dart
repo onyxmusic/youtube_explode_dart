@@ -33,8 +33,19 @@ class RelatedVideosClient {
       return null;
     }
 
-    final duration = data.getJson<String>(
-        'contentImage/thumbnailViewModel/overlays/0/thumbnailBottomOverlayViewModel/badges/0/thumbnailBadgeViewModel/text');
+    // ⚡ KÖKTEN ÇÖZÜM: İlerleme çubuğu gelse dahi, akıllı döngü sayesinde 0, 1 ve 2. indeksleri tarayarak süreyi her koşulda bulur
+    String? duration;
+    for (int i = 0; i < 3; i++) {
+      duration = data.getJson<String>(
+          'contentImage/thumbnailViewModel/overlays/$i/thumbnailBottomOverlayViewModel/badges/0/thumbnailBadgeViewModel/text');
+      if (duration != null) break;
+
+      // Yedek Plan: Eski nesil zaman balonlarını tarar
+      duration = data.getJson<String>(
+          'contentImage/thumbnailViewModel/overlays/$i/thumbnailOverlayTimeStatusRenderer/text/simpleText');
+      if (duration != null) break;
+    }
+
     final uploadDate = data.getJson<String>(
         'metadata/lockupMetadataViewModel/metadata/contentMetadataViewModel/metadataRows/1/metadataParts/1/text/content');
     final views = data.getJson<String>(
@@ -57,7 +68,6 @@ class RelatedVideosClient {
         Engagement(int.parse((views ?? '0').stripNonDigits()), null, null),
         duration == 'LIVE');
   }
-
   Video? _parseCompactVideo(Map<String, dynamic> data) {
     if (data
         case {
