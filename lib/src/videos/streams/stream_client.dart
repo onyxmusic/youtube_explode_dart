@@ -105,12 +105,7 @@ class StreamClient {
             );
           }
 
-          final response = await _httpClient.head(streams.first.url);
-          if (response.statusCode == 403) {
-            throw YoutubeExplodeException(
-              'Video $videoId returned 403 (stream: ${streams.first.tag})',
-            );
-          }
+          
           uniqueStreams.addAll(streams);
         });
       } catch (e, s) {
