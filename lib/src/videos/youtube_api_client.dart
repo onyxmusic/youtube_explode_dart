@@ -63,13 +63,17 @@ class YoutubeApiClient {
   /// This client doesn't require a PO Token and provides better compatibility
   /// for streaming audio/video without 403 errors.
   /// Based on yt-dlp's android_sdkless client.
+  /// Android client without androidSdkVersion field.
+  /// This client doesn't require a PO Token and provides better compatibility
+  /// for streaming audio/video without 403 errors.
+  /// Based on yt-dlp's android_sdkless client.
   static const androidSdkless = YoutubeApiClient({
     'context': {
       'client': {
         'clientName': 'ANDROID',
-        'clientVersion': '20.10.38',
+        'clientVersion': '20.15.34', // <-- DEĞİŞTİR (Eski: 20.10.38)
         'userAgent':
-            'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip',
+            'com.google.android.youtube/20.15.34 (Linux; U; Android 11) gzip', // <-- DEĞİŞTİR (Eski: 20.10.38)
         'hl': 'en',
         'timeZone': 'UTC',
         'utcOffsetMinutes': 0,
