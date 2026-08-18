@@ -27,26 +27,21 @@ class StreamClient {
       : _controller = StreamController(_httpClient),
         _jsChallengeSolver = jsSolver;
 
-  Future<StreamManifest> getManifest(dynamic videoId,
-      {@Deprecated(
-          'Use the ytClient parameter instead passing the proper [YoutubeApiClient]s')
-      bool fullManifest = false,
-      List<YoutubeApiClient>? ytClients,
-      bool requireWatchPage = true}) async {
+  /// Gets the manifest that contains information
+  /// about available streams in the specified video.
+  Future<StreamManifest> getManifest(
+    dynamic videoId, {
+    @Deprecated('Use the ytClients parameter instead')
+    bool fullManifest = false,
+    List<YoutubeApiClient>? ytClients,
+    bool requireWatchPage = false,
+  }) async {
     assert(ytClients == null || ytClients.isNotEmpty,
         'ytClients cannot be an empty list');
 
     videoId = VideoId.fromString(videoId);
-    
-    // Defaulting to iOS client first as it bypasses botguard controls
-    final clients = ytClients ?? [
-      YoutubeApiClient.ios,
-      YoutubeApiClient.androidSdkless,
-    ];
-
-    if (_jsChallengeSolver != null && ytClients == null) {
-      clients.add(YoutubeApiClient.safari);
-    }
+    // Varsayılan olarak en stabil çalışan IOS ve ANDROID_VR istemcilerini kullan
+    final clients = ytClients ?? [YoutubeApiClient.ios, YoutubeApiClient.androidVr];
 
     final uniqueStreams = LinkedHashSet<StreamInfo>(
       equals: (a, b) {
@@ -76,14 +71,15 @@ class StreamClient {
             ytClient: client,
             requireWatchPage: requireWatchPage,
           ).toList();
+
           if (streams.isEmpty) {
             throw VideoUnavailableException(
               'Video "$videoId" does not contain any playable streams.',
             );
           }
 
-          // HEAD request check removed here to prevent false-positive 403 blocks
-
+          // NOT: 403 hatasına sebep olan 'head' sorgusu kaldırıldı.
+          // YouTube CDN HEAD isteklerini 403 ile reddettiği için akışlar doğrudan ekleniyor.
           uniqueStreams.addAll(streams);
         });
       } catch (e, s) {
@@ -95,27 +91,20 @@ class StreamClient {
       }
     }
 
-    // If the user has not provided any client retry with the tv which work also in some restricted videos.
-    if (uniqueStreams.isEmpty && ytClients == null) {
-      return getManifest(videoId, ytClients: [YoutubeApiClient.tv]);
-    }
     if (uniqueStreams.isEmpty) {
       if (lastException is Error && lastException.stackTrace != null) {
         throw Error.throwWithStackTrace(
             lastException, lastException.stackTrace!);
       }
       throw lastException ??
-          VideoUnavailableException(
-              'Video "$videoId" has no available streams');
+          VideoUnavailableException('Video "$videoId" has no available streams');
     }
     return StreamManifest(uniqueStreams.toList());
   }
 
-  /// Gets the HTTP Live Stream (HLS) manifest URL
-  /// for the specified video (if it's a live video stream).
+  /// Gets the HTTP Live Stream (HLS) manifest URL for live videos.
   Future<String> getHttpLiveStreamUrl(VideoId videoId) async {
     final watchPage = await WatchPage.get(_httpClient, videoId.value);
-
     final playerResponse = watchPage.playerResponse;
 
     if (playerResponse == null) {
@@ -138,26 +127,31 @@ class StreamClient {
     return hlsManifest;
   }
 
-  /// Gets the actual stream which is identified by the specified metadata.
-  /// Usually this downloads the bytes of the stream.
-  /// For HLS streams all the fragments are concatenated into a single stream.
+  /// Gets the actual stream bytes.
   Stream<List<int>> get(StreamInfo streamInfo) =>
       _httpClient.getStream(streamInfo, streamClient: this);
 
-  Stream<StreamInfo> _getStreams(VideoId videoId,
-      {required YoutubeApiClient ytClient,
-      bool requireWatchPage = true}) async* {
-    await for (final stream
-        in _getStream(videoId, ytClient, requireWatchPage: requireWatchPage)) {
+  Stream<StreamInfo> _getStreams(
+    VideoId videoId, {
+    required YoutubeApiClient ytClient,
+    bool requireWatchPage = false,
+  }) async* {
+    await for (final stream in _getStream(videoId, ytClient,
+        requireWatchPage: requireWatchPage)) {
       yield stream;
     }
   }
 
-  Stream<StreamInfo> _getStream(VideoId videoId, YoutubeApiClient ytClient,
-      {bool requireWatchPage = true}) async* {
+  Stream<StreamInfo> _getStream(
+    VideoId videoId,
+    YoutubeApiClient ytClient, {
+    bool requireWatchPage = false,
+  }) async* {
     WatchPage? watchPage;
     if (requireWatchPage) {
-      watchPage = await WatchPage.get(_httpClient, videoId.value);
+      try {
+        watchPage = await WatchPage.get(_httpClient, videoId.value);
+      } catch (_) {}
     }
     final playerResponse = await _controller
         .getPlayerResponse(videoId, ytClient, watchPage: watchPage);
@@ -196,8 +190,11 @@ class StreamClient {
     }
   }
 
-  Stream<StreamInfo> _parseStreamInfo(Iterable<StreamInfoProvider> streams,
-      {WatchPage? watchPage, VideoId? videoId}) async* {
+  Stream<StreamInfo> _parseStreamInfo(
+    Iterable<StreamInfoProvider> streams, {
+    WatchPage? watchPage,
+    VideoId? videoId,
+  }) async* {
     final nChallenges = <String>{};
     final sigChallenges = <String>{};
 
@@ -212,9 +209,7 @@ class StreamClient {
           if (stream.signatureParameter != null) {
             sigChallenges.add(stream.signature!);
           }
-        } catch (e) {
-          // Skip invalid URLs
-        }
+        } catch (_) {}
       }
     }
 
@@ -253,18 +248,6 @@ class StreamClient {
           final decoded = solvedChallenges[nParam];
           if (decoded != null) {
             url = url.setQueryParam('n', decoded);
-            _logger.fine(
-                'Decoded n-sig for stream itag $itag. $nParam -> $decoded}');
-          } else {
-            try {
-              final individualDecoded = await solver.solve(
-                  watchPage.sourceUrl!, JSChallengeType.n, nParam);
-              url = url.setQueryParam('n', individualDecoded);
-              _logger.fine(
-                  'Decoded n-sig for stream itag $itag (individual). $nParam -> $individualDecoded}');
-            } catch (e) {
-              _logger.warning('Could not decipher n-sig using JS solver: $e');
-            }
           }
         }
         if (stream.signatureParameter != null) {
@@ -273,42 +256,24 @@ class StreamClient {
           final decoded = solvedChallenges[sig];
           if (decoded != null) {
             url = url.setQueryParam(sigParam, decoded);
-            _logger.fine(
-                'Decoded signature for stream itag $itag. $sigParam -> $decoded}');
-          } else {
-            try {
-              final individualDecoded = await solver.solve(
-                  watchPage.sourceUrl!, JSChallengeType.sig, sig);
-              url = url.setQueryParam(sigParam, individualDecoded);
-              _logger.fine(
-                  'Decoded signature for stream itag $itag (individual). $sigParam -> $individualDecoded}');
-            } catch (e) {
-              _logger
-                  .warning('Could not decipher signature using JS solver: $e');
-            }
           }
         }
       }
 
-      final contentLength = stream.contentLength ??
-          (await _httpClient.getContentLength(url, validate: false)) ??
-          0;
-
-      if (contentLength <= 0) {
-        continue;
-      }
-
-      final container = StreamContainer.parse(stream.container!);
+      // Content-Length yoksa akışı çöpe atmak yerine 0 veya tahmini değer verilir
+      final contentLength = stream.contentLength ?? 0;
+      final container = StreamContainer.parse(stream.container ?? 'mp4');
       final fileSize = FileSize(contentLength);
-      final bitrate = Bitrate(stream.bitrate!);
+      final bitrate = Bitrate(stream.bitrate ?? 128000);
 
       final audioCodec = stream.audioCodec;
       final videoCodec = stream.videoCodec;
 
+      // HLS
       if (stream.source == StreamSource.hls) {
         if (stream.audioOnly) {
           yield HlsAudioStreamInfo(
-            videoId ?? watchPage!.videoId,
+            videoId ?? watchPage?.videoId ?? VideoId(''),
             itag,
             url,
             container,
@@ -331,7 +296,7 @@ class StreamClient {
 
         if (stream.videoOnly) {
           yield HlsVideoStreamInfo(
-            videoId ?? watchPage!.videoId,
+            videoId ?? watchPage?.videoId ?? VideoId(''),
             itag,
             url,
             container,
@@ -347,14 +312,14 @@ class StreamClient {
           );
         } else {
           yield HlsMuxedStreamInfo(
-            videoId ?? watchPage!.videoId,
+            videoId ?? watchPage?.videoId ?? VideoId(''),
             itag,
             url,
             container,
             fileSize,
             bitrate,
-            audioCodec!,
-            videoCodec!,
+            audioCodec ?? '',
+            videoCodec ?? '',
             videoQuality.qualityString,
             videoQuality,
             videoResolution,
@@ -365,10 +330,10 @@ class StreamClient {
         continue;
       }
 
+      // Muxed veya Video-only
       if (!videoCodec.isNullOrWhiteSpace) {
         final framerate = Framerate(stream.framerate ?? 24);
         final videoQuality = VideoQualityUtil.fromLabel(stream.qualityLabel);
-
         final videoWidth = stream.videoWidth;
         final videoHeight = stream.videoHeight;
         final videoResolution = videoWidth != null && videoHeight != null
@@ -377,9 +342,8 @@ class StreamClient {
 
         if (!audioCodec.isNullOrWhiteSpace &&
             stream.source != StreamSource.adaptive) {
-          assert(stream.audioTrack == null);
           yield MuxedStreamInfo(
-            videoId ?? watchPage!.videoId,
+            videoId ?? watchPage?.videoId ?? VideoId(''),
             itag,
             url,
             container,
@@ -397,7 +361,7 @@ class StreamClient {
         }
 
         yield VideoOnlyStreamInfo(
-          videoId ?? watchPage!.videoId,
+          videoId ?? watchPage?.videoId ?? VideoId(''),
           itag,
           url,
           container,
@@ -412,21 +376,20 @@ class StreamClient {
           stream.codec,
         );
         continue;
-      } else if (!audioCodec.isNullOrWhiteSpace) {
+      } else if (!audioCodec.isNullOrWhiteSpace || stream.audioOnly) {
         yield AudioOnlyStreamInfo(
-            videoId ?? watchPage!.videoId,
-            itag,
-            url,
-            container,
-            fileSize,
-            bitrate,
-            audioCodec!,
-            stream.qualityLabel!,
-            stream.fragments ?? const [],
-            stream.codec,
-            stream.audioTrack);
-      } else {
-        throw YoutubeExplodeException('Could not extract stream codec');
+          videoId ?? watchPage?.videoId ?? VideoId(''),
+          itag,
+          url,
+          container,
+          fileSize,
+          bitrate,
+          audioCodec ?? 'mp4a.40.2',
+          stream.qualityLabel ?? 'AUDIO_QUALITY_MEDIUM',
+          stream.fragments ?? const [],
+          stream.codec,
+          stream.audioTrack,
+        );
       }
     }
   }
