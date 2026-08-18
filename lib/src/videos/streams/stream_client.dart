@@ -29,19 +29,17 @@ class StreamClient {
 
   /// Gets the manifest that contains information
   /// about available streams in the specified video.
-  Future<StreamManifest> getManifest(
-    dynamic videoId, {
-    @Deprecated('Use the ytClients parameter instead')
-    bool fullManifest = false,
-    List<YoutubeApiClient>? ytClients,
-    bool requireWatchPage = false,
-  }) async {
+  Future<StreamManifest> getManifest(dynamic videoId,
+      {@Deprecated('Use the ytClient parameter instead')
+      bool fullManifest = false,
+      List<YoutubeApiClient>? ytClients,
+      bool requireWatchPage = false}) async {
     assert(ytClients == null || ytClients.isNotEmpty,
         'ytClients cannot be an empty list');
 
     videoId = VideoId.fromString(videoId);
-    // Varsayılan olarak en stabil çalışan IOS ve ANDROID_VR istemcilerini kullan
-    final clients = ytClients ?? [YoutubeApiClient.ios, YoutubeApiClient.androidVr];
+    // 🚀 Varsayılan istemci doğrudan çalışan ANDROID_SDKLESS olarak ayarlandı
+    final clients = ytClients ?? [YoutubeApiClient.androidSdkless];
 
     final uniqueStreams = LinkedHashSet<StreamInfo>(
       equals: (a, b) {
@@ -78,8 +76,7 @@ class StreamClient {
             );
           }
 
-          // NOT: 403 hatasına sebep olan 'head' sorgusu kaldırıldı.
-          // YouTube CDN HEAD isteklerini 403 ile reddettiği için akışlar doğrudan ekleniyor.
+          // 🚀 403 hatasına neden olan 'HEAD' isteği kaldırıldı
           uniqueStreams.addAll(streams);
         });
       } catch (e, s) {
@@ -91,13 +88,19 @@ class StreamClient {
       }
     }
 
+    // Başarısızlık durumunda ANDROID_SDKLESS ile bir kez daha zorla
+    if (uniqueStreams.isEmpty && ytClients == null) {
+      return getManifest(videoId, ytClients: [YoutubeApiClient.androidSdkless]);
+    }
+
     if (uniqueStreams.isEmpty) {
       if (lastException is Error && lastException.stackTrace != null) {
         throw Error.throwWithStackTrace(
             lastException, lastException.stackTrace!);
       }
       throw lastException ??
-          VideoUnavailableException('Video "$videoId" has no available streams');
+          VideoUnavailableException(
+              'Video "$videoId" has no available streams');
     }
     return StreamManifest(uniqueStreams.toList());
   }
@@ -131,22 +134,17 @@ class StreamClient {
   Stream<List<int>> get(StreamInfo streamInfo) =>
       _httpClient.getStream(streamInfo, streamClient: this);
 
-  Stream<StreamInfo> _getStreams(
-    VideoId videoId, {
-    required YoutubeApiClient ytClient,
-    bool requireWatchPage = false,
-  }) async* {
-    await for (final stream in _getStream(videoId, ytClient,
-        requireWatchPage: requireWatchPage)) {
+  Stream<StreamInfo> _getStreams(VideoId videoId,
+      {required YoutubeApiClient ytClient,
+      bool requireWatchPage = false}) async* {
+    await for (final stream
+        in _getStream(videoId, ytClient, requireWatchPage: requireWatchPage)) {
       yield stream;
     }
   }
 
-  Stream<StreamInfo> _getStream(
-    VideoId videoId,
-    YoutubeApiClient ytClient, {
-    bool requireWatchPage = false,
-  }) async* {
+  Stream<StreamInfo> _getStream(VideoId videoId, YoutubeApiClient ytClient,
+      {bool requireWatchPage = false}) async* {
     WatchPage? watchPage;
     if (requireWatchPage) {
       try {
@@ -190,11 +188,8 @@ class StreamClient {
     }
   }
 
-  Stream<StreamInfo> _parseStreamInfo(
-    Iterable<StreamInfoProvider> streams, {
-    WatchPage? watchPage,
-    VideoId? videoId,
-  }) async* {
+  Stream<StreamInfo> _parseStreamInfo(Iterable<StreamInfoProvider> streams,
+      {WatchPage? watchPage, VideoId? videoId}) async* {
     final nChallenges = <String>{};
     final sigChallenges = <String>{};
 
@@ -260,9 +255,8 @@ class StreamClient {
         }
       }
 
-      // Content-Length yoksa akışı çöpe atmak yerine 0 veya tahmini değer verilir
       final contentLength = stream.contentLength ?? 0;
-      final container = StreamContainer.parse(stream.container ?? 'mp4');
+      final container = StreamContainer.parse(stream.container ?? 'webm');
       final fileSize = FileSize(contentLength);
       final bitrate = Bitrate(stream.bitrate ?? 128000);
 
@@ -384,7 +378,7 @@ class StreamClient {
           container,
           fileSize,
           bitrate,
-          audioCodec ?? 'mp4a.40.2',
+          audioCodec ?? 'opus',
           stream.qualityLabel ?? 'AUDIO_QUALITY_MEDIUM',
           stream.fragments ?? const [],
           stream.codec,
